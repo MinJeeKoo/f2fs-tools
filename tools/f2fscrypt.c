@@ -20,7 +20,8 @@
 #define _GNU_SOURCE
 #endif
 
-#include "config.h"
+#include <f2fs_fs.h>
+
 #include <assert.h>
 #include <errno.h>
 #include <getopt.h>
@@ -30,7 +31,9 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#ifdef HAVE_MNTENT_H
 #include <mntent.h>
+#endif
 #include <sys/ioctl.h>
 #include <sys/stat.h>
 #include <sys/types.h>
@@ -38,8 +41,15 @@
 #include <termios.h>
 #include <unistd.h>
 #include <signal.h>
+#ifdef __KERNEL__
 #include <linux/fs.h>
+#endif
+
+#ifdef HAVE_UUID_UUID_H
 #include <uuid/uuid.h>
+#else
+typedef unsigned char uuid_t[16];
+#endif
 
 #if !defined(HAVE_ADD_KEY) || !defined(HAVE_KEYCTL)
 #include <sys/syscall.h>
@@ -97,7 +107,9 @@ struct f2fs_fscrypt_policy {
 	__u8 filenames_encryption_mode;
 	__u8 flags;
 	__u8 master_key_descriptor[F2FS_KEY_DESCRIPTOR_SIZE];
-} __attribute__((packed));
+};
+
+static_assert(sizeof(struct f2fs_fscrypt_policy) == 12, "");
 
 #define F2FS_IOC_SET_ENCRYPTION_POLICY	_IOR('f', 19, struct f2fs_fscrypt_policy)
 #define F2FS_IOC_GET_ENCRYPTION_PWSALT	_IOW('f', 20, __u8[16])
@@ -114,14 +126,16 @@ struct f2fs_encryption_key {
         __u32 mode;
         char raw[F2FS_MAX_KEY_SIZE];
         __u32 size;
-} __attribute__((__packed__));
+};
+
+static_assert(sizeof(struct f2fs_encryption_key) == 72, "");
 
 int options;
 
 extern void f2fs_sha512(const unsigned char *in, unsigned long in_size,
 						unsigned char *out);
 
-#ifndef HAVE_KEYCTL
+#if !defined(HAVE_KEYCTL)
 static long keyctl(int cmd, ...)
 {
 	va_list va;
@@ -137,7 +151,7 @@ static long keyctl(int cmd, ...)
 }
 #endif
 
-#ifndef HAVE_ADD_KEY
+#if !defined(HAVE_ADD_KEY)
 static key_serial_t add_key(const char *type, const char *description,
 			    const void *payload, size_t plen,
 			    key_serial_t keyring)
@@ -270,7 +284,8 @@ static void clear_secrets(void)
 	memset(in_passphrase, 0, sizeof(in_passphrase));
 }
 
-static void die_signal_handler(int signum, siginfo_t *siginfo, void *context)
+static void die_signal_handler(int UNUSED(signum),
+		siginfo_t *UNUSED(siginfo), void *UNUSED(context))
 {
 	clear_secrets();
 	exit(-1);
@@ -342,11 +357,13 @@ static void parse_salt(char *salt_str, int flags)
 			perror("F2FS_IOC_GET_ENCRYPTION_PWSALT");
 			exit(1);
 		}
+#ifdef HAVE_LIBUUID
 		if (options & OPT_VERBOSE) {
 			char tmp[80];
 			uuid_unparse(buf, tmp);
 			printf("%s has pw salt %s\n", cp, tmp);
 		}
+#endif
 		salt_len = 16;
 	} else if (strncmp(cp, "f:", 2) == 0) {
 		cp += 2;
@@ -368,8 +385,10 @@ static void parse_salt(char *salt_str, int flags)
 				(((unsigned char)(h - hexchars) << 4) +
 				 (unsigned char)(l - hexchars));
 		}
+#ifdef HAVE_LIBUUID
 	} else if (uuid_parse(cp, buf) == 0) {
 		salt_len = 16;
+#endif
 	} else {
 	invalid_salt:
 		fprintf(stderr, "Invalid salt: %s\n", salt_str);
@@ -708,6 +727,7 @@ static void do_add_key(int argc, char **argv, const struct cmd_desc *cmd)
 			break;
 		default:
 			fprintf(stderr, "Unrecognized option: %c\n", opt);
+			fallthrough;
 		case '?':
 			fputs("USAGE:\n  ", stderr);
 			fputs(cmd->cmd_help, stderr);
@@ -832,7 +852,8 @@ static void do_get_policy(int argc, char **argv, const struct cmd_desc *cmd)
 "Give the invoking process (typically a shell) a new session keyring,\n" \
 "discarding its old session keyring.\n"
 
-static void do_new_session(int argc, char **argv, const struct cmd_desc *cmd)
+static void do_new_session(int argc, char **UNUSED(argv),
+					const struct cmd_desc *cmd)
 {
 	long keyid, ret;
 
@@ -867,7 +888,7 @@ const struct cmd_desc cmd_list[] = {
 	{ NULL, NULL, NULL, NULL, 0 }
 };
 
-static void do_help(int argc, char **argv, const struct cmd_desc *cmd)
+static void do_help(int argc, char **argv, const struct cmd_desc *UNUSED(cmd))
 {
 	const struct cmd_desc *p;
 
